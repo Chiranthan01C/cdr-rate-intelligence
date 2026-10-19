@@ -45,6 +45,12 @@ GLOBAL_CONCURRENCY = 8
 PER_HOST_CONCURRENCY = 2
 MAX_PAGES = 40
 
+# After this many consecutive detail failures, stop asking a holder for more.
+# AMP Bank GO refused every version of GetProductDetail for all nine of its
+# products in the first live run: nine products times five versions is 45
+# pointless requests into someone's production estate to learn one fact.
+DETAIL_FAILURE_THRESHOLD = 3
+
 # GetProducts tops out at v4 in the Standards; GetProductDetail at v5.
 LIST_VERSIONS = ("4", "3", "2", "1")
 DETAIL_VERSIONS = ("5", "4", "3", "2", "1")
@@ -135,15 +141,54 @@ async def fetch_summaries(client, holder, gate, host_gate) -> HolderResult:
     return HolderResult(holder, summaries=products)
 
 
-async def fetch_detail(client, holder, product_id, gate, host_gate) -> dict | None:
+class HolderCircuit:
+    """Stops a holder being hammered once it is clearly not serving detail.
+
+    Concurrency means a few requests already in flight still land after the
+    breaker trips. That is accepted: the point is to cap the damage, not to
+    be exact.
+    """
+
+    def __init__(self, threshold: int = DETAIL_FAILURE_THRESHOLD):
+        self.threshold = threshold
+        self._consecutive: dict[str, int] = {}
+        self.tripped: set[str] = set()
+
+    def allow(self, key: str) -> bool:
+        return key not in self.tripped
+
+    def record(self, key: str, ok: bool) -> None:
+        if ok:
+            self._consecutive[key] = 0
+            return
+        count = self._consecutive.get(key, 0) + 1
+        self._consecutive[key] = count
+        if count >= self.threshold and key not in self.tripped:
+            self.tripped.add(key)
+            LOG.warning(
+                "%s refused %d detail requests in a row - skipping its remaining products",
+                key,
+                count,
+            )
+
+
+async def fetch_detail(client, holder, product_id, gate, host_gate, circuit=None) -> dict | None:
+    key = holder.brand_id
+    if circuit is not None and not circuit.allow(key):
+        return None
     url = f"{holder.products_url}/{product_id}"
     try:
         async with gate, host_gate:
             payload, _ = await _negotiate(client, url, DETAIL_VERSIONS)
-        return unwrap_detail(payload)
+        detail = unwrap_detail(payload)
     except Exception as exc:  # noqa: BLE001
         LOG.debug("%s detail %s failed: %s", holder.brand_name, product_id, exc)
+        if circuit is not None:
+            circuit.record(key, False)
         return None
+    if circuit is not None:
+        circuit.record(key, detail is not None)
+    return detail
 
 
 async def crawl(
@@ -176,6 +221,7 @@ async def crawl(
             total_products,
         )
 
+        circuit = HolderCircuit()
         jobs = [
             (result, pid)
             for result in live
@@ -183,7 +229,9 @@ async def crawl(
         ]
         details = await asyncio.gather(
             *(
-                fetch_detail(client, result.holder, pid, gate, host_gate_for(result.holder))
+                fetch_detail(
+                    client, result.holder, pid, gate, host_gate_for(result.holder), circuit
+                )
                 for result, pid in jobs
             )
         )

@@ -44,6 +44,21 @@ def cmd_crawl(args) -> int:
 
     conn = store_mod.connect(args.db)
     written = store_mod.write_snapshot(conn, rows)
+    store_mod.write_holder_snapshot(
+        conn,
+        [
+            (
+                captured_at,
+                r.holder.brand_id,
+                r.holder.brand_name,
+                len(r.summaries),
+                len(r.details),
+                r.detail_failures,
+                r.error,
+            )
+            for r in results
+        ],
+    )
     failures = {r.holder.brand_name: r.error for r in results if not r.ok}
     with conn:
         conn.execute(
@@ -70,6 +85,10 @@ def cmd_crawl(args) -> int:
 
 
 def cmd_score(args) -> int:
+    from decimal import Decimal
+
+    from .normalise import NormalisedRate
+
     conn = store_mod.connect(args.db)
     dates = store_mod.snapshot_dates(conn)
     if not dates:
@@ -77,18 +96,15 @@ def cmd_score(args) -> int:
         return 1
 
     latest = dates[-1]
-    grouped: dict[tuple[str, str], list] = {}
+    rows_by_brand: dict[str, list] = {}
     cursor = conn.execute(
-        "SELECT brand_id, brand_name, product_id, rate_kind, rate_pct, comparison_rate_pct,"
-        " tier_name, rate_repaired FROM rate_snapshot WHERE captured_at = ?",
+        "SELECT brand_id, brand_name, product_id, rate_kind, rate_pct,"
+        " comparison_rate_pct, tier_name, rate_repaired"
+        " FROM rate_snapshot WHERE captured_at = ?",
         (latest,),
     )
-    # Reconstruct just enough of NormalisedRate for scoring.
-    from .normalise import NormalisedRate
-    from decimal import Decimal
-
     for bid, bname, pid, kind, rate, comp, tier, repaired in cursor:
-        grouped.setdefault((bid, bname), []).append(
+        rows_by_brand.setdefault(bid, []).append(
             NormalisedRate(
                 brand_id=bid, brand_name=bname, product_id=pid, product_name="",
                 product_category="", rate_kind=kind, rate_type="",
@@ -100,14 +116,47 @@ def cmd_score(args) -> int:
             )
         )
 
-    scores = [score_holder(bid, bname, rows) for (bid, bname), rows in grouped.items()]
-    scores.sort(key=lambda s: (s.conformance, s.completeness))
-
-    print(f"{'brand':38} {'rates':>6} {'complete':>9} {'conform':>8}")
-    for score in scores:
+    # Drive the report off every holder CRAWLED, not off the holders that
+    # produced rows. A holder serving nothing is the most interesting row in
+    # a data quality report and must never be omitted for having no data.
+    holders = store_mod.holders_at(conn, latest)
+    if not holders:
         print(
-            f"{score.brand_name[:38]:38} {score.rate_rows:6d} "
-            f"{score.completeness:9.1%} {score.conformance:8.1%}"
+            "this snapshot predates per-holder recording - re-run `crawl`",
+            file=sys.stderr,
+        )
+        return 1
+
+    scored = []
+    for bid, bname, listed, fetched, dfails, err in holders:
+        rows = rows_by_brand.get(bid, [])
+        scored.append((
+            listed,
+            score_holder(
+                bid, bname, rows,
+                product_ids_seen={r.product_id for r in rows} if rows else set(),
+                details_fetched=fetched,
+                detail_failures=dfails,
+                crawl_error=err,
+            ),
+        ))
+
+    # Worst first: silent holders at the top, then by conformance.
+    scored.sort(key=lambda pair: (pair[1].rate_rows > 0, pair[1].conformance,
+                                  pair[1].completeness))
+
+    print(f"{'brand':30} {'prod':>5} {'rates':>6} {'compl':>7} {'conf':>6}  note")
+    for listed, score in scored:
+        print(
+            f"{score.brand_name[:30]:30} {listed:5d} {score.rate_rows:6d} "
+            f"{score.completeness:7.1%} {score.conformance:6.1%}  {score.note}"
+        )
+    scores = [score for _listed, score in scored]
+    silent = [s_ for s_ in scores if s_.rate_rows == 0]
+    if silent:
+        print(
+            f"\n{len(silent)} of {len(scores)} holders published no usable rates.",
+            file=sys.stderr,
         )
     return 0
 

@@ -44,6 +44,20 @@ CREATE INDEX IF NOT EXISTS idx_snapshot_key
     ON rate_snapshot (brand_id, product_id, rate_kind, rate_type, tier_name, captured_at);
 CREATE INDEX IF NOT EXISTS idx_snapshot_time ON rate_snapshot (captured_at);
 
+-- One row per holder per snapshot, written even when the holder served
+-- nothing. Without this, a holder that publishes no readable data simply
+-- has no rows and disappears from the scorecard entirely.
+CREATE TABLE IF NOT EXISTS holder_snapshot (
+    captured_at      TEXT NOT NULL,
+    brand_id         TEXT NOT NULL,
+    brand_name       TEXT NOT NULL,
+    products_listed  INTEGER NOT NULL,
+    details_fetched  INTEGER NOT NULL,
+    detail_failures  INTEGER NOT NULL,
+    crawl_error      TEXT,
+    PRIMARY KEY (captured_at, brand_id)
+);
+
 CREATE TABLE IF NOT EXISTS crawl_run (
     captured_at   TEXT PRIMARY KEY,
     holders_total INTEGER NOT NULL,
@@ -102,6 +116,24 @@ def write_snapshot(conn: sqlite3.Connection, rows: list[NormalisedRate]) -> int:
             "INSERT INTO rate_snapshot VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", payload
         )
     return len(payload)
+
+
+def write_holder_snapshot(conn: sqlite3.Connection, rows: list[tuple]) -> int:
+    """Record every holder crawled, including the ones that served nothing."""
+    with conn:
+        conn.executemany(
+            "INSERT OR REPLACE INTO holder_snapshot VALUES (?,?,?,?,?,?,?)", rows
+        )
+    return len(rows)
+
+
+def holders_at(conn: sqlite3.Connection, captured_at: str) -> list[sqlite3.Row]:
+    cur = conn.execute(
+        "SELECT brand_id, brand_name, products_listed, details_fetched,"
+        " detail_failures, crawl_error FROM holder_snapshot WHERE captured_at = ?",
+        (captured_at,),
+    )
+    return cur.fetchall()
 
 
 def snapshot_dates(conn: sqlite3.Connection) -> list[str]:
