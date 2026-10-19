@@ -69,6 +69,14 @@ class RateMove:
 
 
 def connect(path: str | Path) -> sqlite3.Connection:
+    """Open the snapshot store, creating its directory if it does not exist.
+
+    The default path is ``data/snapshots.sqlite`` and git does not track empty
+    directories, so a fresh clone has no ``data/`` and sqlite would fail with
+    an opaque "unable to open database file".
+    """
+    if path != ":memory:":
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.executescript(SCHEMA)
     return conn

@@ -76,3 +76,13 @@ def test_store_is_append_only_across_runs():
     snapshot(conn, "0.0410", T2)
     total = conn.execute("SELECT COUNT(*) FROM rate_snapshot").fetchone()[0]
     assert total == 2, "a new snapshot must never overwrite the previous one"
+
+
+def test_connect_creates_missing_directory(tmp_path):
+    """A fresh clone has no data/ directory; connect must not fail on it."""
+    target = tmp_path / "data" / "nested" / "snapshots.sqlite"
+    assert not target.parent.exists()
+    conn = connect(target)
+    snapshot(conn, "0.0450", T1)
+    assert target.exists()
+    assert snapshot_dates(conn) == [T1]
