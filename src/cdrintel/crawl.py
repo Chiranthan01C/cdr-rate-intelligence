@@ -1,16 +1,27 @@
 """Fetch product catalogues from every data holder, politely.
 
-Two things make this harder than a loop over 117 URLs.
+Two passes, because the Consumer Data Standards split the data:
 
-First, these are production endpoints at real banks, serving a public good
-under a regulatory obligation. A crawler that hammers them is both rude and
-the fastest way to get the project's IP range blocked. Concurrency is capped
-and every request identifies itself.
+  GET /banking/products        -> summaries. Names and ids. NO rates.
+  GET /banking/products/{id}   -> the full record: deposit rates, lending
+                                  rates, fees, eligibility, constraints.
 
-Second, the holders are not uniform in anything except the path. Some paginate,
-some do not. Some are slow. Some return 406 unless the version header matches
-exactly. A failure at one holder must never abort the run -- a partial snapshot
-with a recorded failure list is useful; an exception at holder 40 of 117 is not.
+There is no bulk detail endpoint, so the second pass is one request per
+product across the whole market -- a few thousand. That is the real cost of
+this project and the reason the concurrency controls below are not decoration.
+
+Three things make this harder than a loop over URLs.
+
+First, these are production endpoints at real banks serving a public
+obligation. Concurrency is capped globally AND per host, and every request
+identifies itself.
+
+Second, holders disagree on which API version they support and answer 406
+when you guess wrong, so versions are negotiated by walking down. The list
+and detail endpoints have different version ceilings.
+
+Third, a failure anywhere must not sink the run. A snapshot covering 112 of
+117 holders with a named gap is useful; an exception at holder 40 is not.
 """
 
 from __future__ import annotations
@@ -27,86 +38,170 @@ from .register import DataHolder
 LOG = logging.getLogger(__name__)
 
 USER_AGENT = (
-    "cdr-rate-intelligence/0.1 (research project; contact via GitHub "
+    "cdr-rate-intelligence/0.2 (research project; contact via GitHub "
     "Chiranthan01C/cdr-rate-intelligence)"
 )
-MAX_CONCURRENCY = 6
+GLOBAL_CONCURRENCY = 8
+PER_HOST_CONCURRENCY = 2
 MAX_PAGES = 40
+
+# GetProducts tops out at v4 in the Standards; GetProductDetail at v5.
+LIST_VERSIONS = ("4", "3", "2", "1")
+DETAIL_VERSIONS = ("5", "4", "3", "2", "1")
 
 
 @dataclasses.dataclass(slots=True)
 class HolderResult:
     holder: DataHolder
-    products: list[dict]
+    summaries: list[dict] = dataclasses.field(default_factory=list)
+    details: list[dict] = dataclasses.field(default_factory=list)
     error: str | None = None
+    detail_failures: int = 0
 
     @property
     def ok(self) -> bool:
         return self.error is None
 
+    @property
+    def product_ids(self) -> set[str]:
+        return {p.get("productId") for p in self.summaries if p.get("productId")}
 
-async def _fetch_page(
-    client: httpx.AsyncClient, url: str, page: int, version: str
-) -> dict:
-    response = await client.get(
-        url,
-        params={"page": page, "page-size": 100},
-        headers={"x-v": version, "accept": "application/json", "user-agent": USER_AGENT},
-    )
+
+def unwrap_detail(payload: dict) -> dict | None:
+    """Pull the product record out of a GetProductDetail envelope.
+
+    The Standards wrap it as {"data": {...}}. A holder that returns the bare
+    record instead is tolerated -- the marker is productId, which every
+    product record carries and no envelope does.
+    """
+    if not isinstance(payload, dict):
+        return None
+    data = payload.get("data")
+    if isinstance(data, dict) and data.get("productId"):
+        return data
+    if payload.get("productId"):
+        return payload
+    return None
+
+
+async def _get(client, url, headers, params=None):
+    response = await client.get(url, params=params, headers=headers)
     response.raise_for_status()
     return response.json()
 
 
-async def fetch_holder(
-    client: httpx.AsyncClient,
-    holder: DataHolder,
-    semaphore: asyncio.Semaphore,
-) -> HolderResult:
-    """Fetch one holder's full product list, following pagination."""
-    products: list[dict] = []
-    async with semaphore:
+async def _negotiate(client, url, versions, params=None):
+    """Try each version in turn, treating 406 as 'not this one'.
+
+    Returns (payload, version). Raises the last error if none are accepted.
+    """
+    last = None
+    for version in versions:
+        headers = {"x-v": version, "accept": "application/json", "user-agent": USER_AGENT}
         try:
-            # Holders disagree on the supported version of GetProducts. Walk
-            # down rather than guessing: 406 means "not this version".
-            for version in ("4", "3", "2", "1"):
-                try:
-                    first = await _fetch_page(client, holder.products_url, 1, version)
-                    break
-                except httpx.HTTPStatusError as exc:
-                    if exc.response.status_code != 406:
-                        raise
-            else:
-                return HolderResult(holder, [], error="no supported GetProducts version")
+            return await _get(client, url, headers, params), version
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 406:
+                raise
+            last = exc
+    raise last or RuntimeError("no supported version")
 
-            products.extend((first.get("data") or {}).get("products") or [])
-            total_pages = int((first.get("meta") or {}).get("totalPages") or 1)
 
-            for page in range(2, min(total_pages, MAX_PAGES) + 1):
-                payload = await _fetch_page(client, holder.products_url, page, version)
-                products.extend((payload.get("data") or {}).get("products") or [])
+async def fetch_summaries(client, holder, gate, host_gate) -> HolderResult:
+    """Pass one: every product summary for a holder, following pagination."""
+    products: list[dict] = []
+    try:
+        async with gate, host_gate:
+            first, version = await _negotiate(
+                client, holder.products_url, LIST_VERSIONS, {"page": 1, "page-size": 100}
+            )
+        products.extend((first.get("data") or {}).get("products") or [])
+        total_pages = int((first.get("meta") or {}).get("totalPages") or 1)
 
-        except Exception as exc:  # noqa: BLE001 - one holder must not sink the run
-            LOG.warning("%s failed: %s", holder.brand_name, exc)
-            return HolderResult(holder, [], error=f"{type(exc).__name__}: {exc}")
+        for page in range(2, min(total_pages, MAX_PAGES) + 1):
+            async with gate, host_gate:
+                payload = await _get(
+                    client,
+                    holder.products_url,
+                    {"x-v": version, "accept": "application/json", "user-agent": USER_AGENT},
+                    {"page": page, "page-size": 100},
+                )
+            products.extend((payload.get("data") or {}).get("products") or [])
 
-    return HolderResult(holder, products)
+    except Exception as exc:  # noqa: BLE001 - one holder must not sink the run
+        LOG.warning("%s summaries failed: %s", holder.brand_name, exc)
+        return HolderResult(holder, error=f"{type(exc).__name__}: {exc}")
+
+    return HolderResult(holder, summaries=products)
+
+
+async def fetch_detail(client, holder, product_id, gate, host_gate) -> dict | None:
+    url = f"{holder.products_url}/{product_id}"
+    try:
+        async with gate, host_gate:
+            payload, _ = await _negotiate(client, url, DETAIL_VERSIONS)
+        return unwrap_detail(payload)
+    except Exception as exc:  # noqa: BLE001
+        LOG.debug("%s detail %s failed: %s", holder.brand_name, product_id, exc)
+        return None
 
 
 async def crawl(
     holders: list[DataHolder], *, timeout: float = 30.0
 ) -> tuple[list[HolderResult], str]:
-    """Crawl every holder. Returns (results, captured_at ISO timestamp)."""
+    """Crawl every holder: summaries, then details. Returns (results, captured_at)."""
     captured_at = dt.datetime.now(dt.timezone.utc).isoformat()
-    semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
-    limits = httpx.Limits(max_connections=MAX_CONCURRENCY)
+    gate = asyncio.Semaphore(GLOBAL_CONCURRENCY)
+    host_gates: dict[str, asyncio.Semaphore] = {}
 
+    def host_gate_for(holder: DataHolder) -> asyncio.Semaphore:
+        key = holder.public_base_uri
+        if key not in host_gates:
+            host_gates[key] = asyncio.Semaphore(PER_HOST_CONCURRENCY)
+        return host_gates[key]
+
+    limits = httpx.Limits(max_connections=GLOBAL_CONCURRENCY * 2)
     async with httpx.AsyncClient(timeout=timeout, limits=limits, follow_redirects=True) as client:
-        results = await asyncio.gather(
-            *(fetch_holder(client, holder, semaphore) for holder in holders)
+        results = list(
+            await asyncio.gather(
+                *(fetch_summaries(client, h, gate, host_gate_for(h)) for h in holders)
+            )
         )
 
+        live = [r for r in results if r.ok]
+        total_products = sum(len(r.summaries) for r in live)
+        LOG.info(
+            "summaries: %d holders ok, %d products to detail-fetch",
+            len(live),
+            total_products,
+        )
+
+        jobs = [
+            (result, pid)
+            for result in live
+            for pid in sorted(result.product_ids)
+        ]
+        details = await asyncio.gather(
+            *(
+                fetch_detail(client, result.holder, pid, gate, host_gate_for(result.holder))
+                for result, pid in jobs
+            )
+        )
+
+    for (result, _pid), detail in zip(jobs, details):
+        if detail is None:
+            result.detail_failures += 1
+        else:
+            result.details.append(detail)
+
     failed = [r for r in results if not r.ok]
+    detail_fails = sum(r.detail_failures for r in results)
     LOG.info(
-        "crawled %d holders: %d ok, %d failed", len(results), len(results) - len(failed), len(failed)
+        "crawled %d holders: %d ok, %d failed; %d product details, %d detail failures",
+        len(results),
+        len(results) - len(failed),
+        len(failed),
+        sum(len(r.details) for r in results),
+        detail_fails,
     )
-    return list(results), captured_at
+    return results, captured_at

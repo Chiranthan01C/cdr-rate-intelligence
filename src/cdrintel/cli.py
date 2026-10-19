@@ -32,7 +32,7 @@ def cmd_crawl(args) -> int:
 
     rows = []
     for result in results:
-        for product in result.products:
+        for product in result.details:
             rows.extend(
                 normalise_product(
                     product,
@@ -51,9 +51,21 @@ def cmd_crawl(args) -> int:
             (captured_at, len(results), len(results) - len(failures), json.dumps(failures)),
         )
 
-    print(f"snapshot {captured_at}: {written} rate rows from {len(results) - len(failures)} holders")
+    products = sum(len(r.details) for r in results)
+    print(
+        f"snapshot {captured_at}: {written} rate rows from {products} products "
+        f"across {len(results) - len(failures)} holders"
+    )
+    if written == 0 and products:
+        print(
+            "WARNING: products fetched but no rates parsed - the schema assumption is wrong",
+            file=sys.stderr,
+        )
     if failures:
         print(f"{len(failures)} holders failed; see crawl_run.failures_json", file=sys.stderr)
+    detail_fails = sum(r.detail_failures for r in results)
+    if detail_fails:
+        print(f"{detail_fails} individual product details could not be fetched", file=sys.stderr)
     return 0
 
 

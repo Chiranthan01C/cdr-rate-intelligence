@@ -19,6 +19,8 @@ The interesting part is not fetching 117 URLs. It is that structurally valid JSO
 
 **Tiered rates have no headline number.** A bonus saver has several `BankingProductRateTier` entries and no single "the rate". Taking the first element is wrong about as often as it is right, so the normaliser emits one row per rate per tier and refuses to invent a headline.
 
+**Rates are not where you first look for them.** `GET /banking/products` returns summaries with no rates at all; every rate lives behind `GET /banking/products/{id}`, one request per product. There is no bulk endpoint, so a full market snapshot is a few thousand requests. The first live run of this project fetched only summaries and produced zero rate rows from five healthy holders — the pipeline ran perfectly and did nothing. Concurrency is now capped globally and per host, and `tests/test_crawl.py` holds the regression that stops a summary ever being mistaken for a detail record again.
+
 **New products are not repricings.** `store.detect_moves` joins consecutive snapshots on `(brand, product, rate kind, rate type, tier)` and deliberately drops anything that appeared or disappeared. Conflating a launched product with a rate cut is the standard way these trackers report phantom movements.
 
 ## Running it
@@ -44,12 +46,13 @@ The value compounds. One snapshot is a comparison table. Twelve months of snapsh
 ## What I would do differently
 
 - The percent-vs-decimal threshold is a heuristic with a magic number in it. The honest fix is per-holder convention detection — infer a holder's convention from the distribution of all its rates, then apply it consistently — rather than judging each value alone.
-- Product *detail* (`GET /banking/products/{id}`) carries fees, eligibility and constraints. This version only reads the summary list, so the fee side of the comparison is not built yet.
+- Product detail carries fees, eligibility and constraints as well as rates. Only the rates are normalised so far; fees are fetched but not yet parsed.
+- Detail fetches ignore each product's `lastUpdated`. Skipping unchanged products and carrying their previous rows forward would cut a full crawl by most of its requests, which matters when the schedule is weekly and the target is someone else's production estate.
 - There is no backfill. The history starts the day the first snapshot runs, which is an argument for starting it today rather than when the rest is finished.
 
 ## Status
 
-Core pipeline complete and tested offline (24 tests, no network required). Live crawl not yet validated end-to-end against the Register.
+33 tests, no network required. The Register and the product list endpoint are verified live: 200 registered brands, 115 of them banking, with version negotiation confirmed in the wild (Wise rejects v4 and serves v3). The detail-fetch pass is written but not yet validated against live payloads at scale.
 
 ## Data source and licence
 

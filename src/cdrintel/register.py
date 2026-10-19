@@ -52,7 +52,6 @@ def _coerce(entry: dict) -> DataHolder | None:
     base = entry.get("publicBaseUri")
     brand_id = entry.get("dataHolderBrandId")
     if not base or not brand_id:
-        LOG.warning("register record without publicBaseUri or brand id: %r", entry.get("brandName"))
         return None
 
     legal = entry.get("legalEntity") or {}
@@ -71,17 +70,30 @@ def parse_holders(payload: dict, industry: str = "banking") -> list[DataHolder]:
     """Parse a Register brands-summary payload. Pure, so it is testable offline."""
     records = payload.get("data") or []
     holders = []
-    skipped = 0
+    unreachable = []
     for entry in records:
+        industries = tuple(entry.get("industries") or ())
+        if industry and industry not in industries:
+            # Energy and non-bank-lending brands are filtered out BEFORE the
+            # reachability check. The Standards do not guarantee a usable
+            # public base URI outside banking, so warning about them is noise.
+            continue
         holder = _coerce(entry)
         if holder is None:
-            skipped += 1
-            continue
-        if industry and industry not in holder.industries:
+            unreachable.append(entry.get("brandName") or "<unnamed>")
             continue
         holders.append(holder)
-    if skipped:
-        LOG.warning("skipped %d malformed register records out of %d", skipped, len(records))
+
+    if unreachable:
+        # A BANKING brand with no public base URI is a genuine finding: it is
+        # registered as a data holder but publishes nothing anyone can read.
+        LOG.warning(
+            "%d of %d %s brands publish no public base URI and cannot be crawled: %s",
+            len(unreachable),
+            len(unreachable) + len(holders),
+            industry or "registered",
+            ", ".join(sorted(unreachable)),
+        )
     return holders
 
 
