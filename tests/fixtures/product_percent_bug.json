@@ -1,0 +1,11 @@
+{
+  "productId": "home-loan-002",
+  "name": "Basic Variable Home Loan",
+  "productCategory": "RESIDENTIAL_MORTGAGES",
+  "lendingRates": [
+    {"lendingRateType": "VARIABLE", "rate": "5.89", "comparisonRate": "5.94",
+     "repaymentType": "PRINCIPAL_AND_INTEREST", "loanPurpose": "OWNER_OCCUPIED"},
+    {"lendingRateType": "FIXED", "rate": "5.49", "repaymentType": "PRINCIPAL_AND_INTEREST"},
+    {"lendingRateType": "PENALTY", "rate": ""}
+  ]
+}

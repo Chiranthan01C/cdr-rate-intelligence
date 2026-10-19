@@ -1,0 +1,26 @@
+{
+  "data": [
+    {
+      "dataHolderBrandId": "brand-alex",
+      "brandName": "Alex Bank",
+      "publicBaseUri": "https://public.cdr.alex.com.au",
+      "industries": ["banking"],
+      "lastUpdated": "2026-09-30T00:00:00Z",
+      "legalEntity": {"legalEntityName": "Alex Bank Pty Ltd", "abn": "12345678901"}
+    },
+    {
+      "dataHolderBrandId": "brand-energyco",
+      "brandName": "EnergyCo",
+      "publicBaseUri": "https://public.cdr.energyco.com.au",
+      "industries": ["energy"],
+      "legalEntity": {"legalEntityName": "EnergyCo Ltd"}
+    },
+    {
+      "dataHolderBrandId": "brand-broken",
+      "brandName": "Missing Base URI Bank",
+      "industries": ["banking"],
+      "legalEntity": {"legalEntityName": "Broken Bank"}
+    }
+  ],
+  "meta": {"totalRecords": 3}
+}

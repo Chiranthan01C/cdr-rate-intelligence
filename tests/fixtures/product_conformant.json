@@ -1,0 +1,13 @@
+{
+  "productId": "savings-001",
+  "name": "Everyday Saver",
+  "productCategory": "TRANS_AND_SAVINGS_ACCOUNTS",
+  "depositRates": [
+    {"depositRateType": "VARIABLE", "rate": "0.0085", "calculationFrequency": "P1D"},
+    {"depositRateType": "BONUS", "rate": "0.0340", "additionalValue": "Deposit $200/month",
+     "tiers": [
+       {"name": "Up to $50,000", "unitOfMeasure": "DOLLAR", "minimumValue": "0", "maximumValue": "50000"},
+       {"name": "Above $50,000", "unitOfMeasure": "DOLLAR", "minimumValue": "50000"}
+     ]}
+  ]
+}
