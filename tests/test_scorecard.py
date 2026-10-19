@@ -49,12 +49,49 @@ class TestHolderSnapshotRoundTrip:
     def test_silent_holder_survives_the_database(self):
         conn = connect(":memory:")
         write_holder_snapshot(conn, [
-            (T, "amp", "AMP Bank GO", 9, 0, 9, None),
-            (T, "alex", "Alex.Bank", 6, 6, 0, None),
+            (T, "amp", "AMP Bank GO", 9, 0, 9, None, "5", None),
+            (T, "alex", "Alex.Bank", 6, 6, 0, None, "5", "7"),
         ])
         rows = holders_at(conn, T)
         names = {r[1] for r in rows}
         assert names == {"AMP Bank GO", "Alex.Bank"}, "a holder with no rates must persist"
+
+    def test_negotiated_versions_are_recorded(self):
+        """Which version a holder serves is a conformance finding in its own right."""
+        conn = connect(":memory:")
+        write_holder_snapshot(conn, [
+            (T, "wise", "Wise", 1, 1, 0, None, "3", "7"),
+        ])
+        row = holders_at(conn, T)[0]
+        assert row[6] == "3", "a holder still on a retired list version must be visible"
+        assert row[7] == "7"
+
+    def test_store_created_before_version_columns_is_migrated(self):
+        """An existing snapshot history must survive a schema addition."""
+        import sqlite3
+
+        conn = sqlite3.connect(":memory:")
+        conn.executescript(
+            "CREATE TABLE holder_snapshot (captured_at TEXT NOT NULL,"
+            " brand_id TEXT NOT NULL, brand_name TEXT NOT NULL,"
+            " products_listed INTEGER NOT NULL, details_fetched INTEGER NOT NULL,"
+            " detail_failures INTEGER NOT NULL, crawl_error TEXT,"
+            " PRIMARY KEY (captured_at, brand_id));"
+        )
+        conn.execute(
+            "INSERT INTO holder_snapshot VALUES (?,?,?,?,?,?,?)",
+            (T, "old", "Legacy Bank", 3, 3, 0, None),
+        )
+        conn.commit()
+
+        from cdrintel.store import _migrate
+
+        with conn:
+            _migrate(conn)
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(holder_snapshot)")}
+        assert {"list_version", "detail_version"} <= columns
+        kept = conn.execute("SELECT brand_name FROM holder_snapshot").fetchone()
+        assert kept[0] == "Legacy Bank", "migration must not drop existing history"
 
 
 class TestCircuitBreaker:

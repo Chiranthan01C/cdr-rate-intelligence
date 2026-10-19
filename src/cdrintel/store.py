@@ -55,6 +55,8 @@ CREATE TABLE IF NOT EXISTS holder_snapshot (
     details_fetched  INTEGER NOT NULL,
     detail_failures  INTEGER NOT NULL,
     crawl_error      TEXT,
+    list_version     TEXT,
+    detail_version   TEXT,
     PRIMARY KEY (captured_at, brand_id)
 );
 
@@ -82,6 +84,22 @@ class RateMove:
         return int((self.current_pct - self.previous_pct) * 100)
 
 
+# Columns added after the first snapshots were written. SQLite has no
+# IF NOT EXISTS for columns, so a store created before them is migrated on
+# open rather than forcing anyone to delete their history.
+_MIGRATIONS = {
+    "holder_snapshot": {"list_version": "TEXT", "detail_version": "TEXT"},
+}
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    for table, columns in _MIGRATIONS.items():
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for name, decl in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+
+
 def connect(path: str | Path) -> sqlite3.Connection:
     """Open the snapshot store, creating its directory if it does not exist.
 
@@ -93,6 +111,8 @@ def connect(path: str | Path) -> sqlite3.Connection:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.executescript(SCHEMA)
+    with conn:
+        _migrate(conn)
     return conn
 
 
@@ -122,7 +142,10 @@ def write_holder_snapshot(conn: sqlite3.Connection, rows: list[tuple]) -> int:
     """Record every holder crawled, including the ones that served nothing."""
     with conn:
         conn.executemany(
-            "INSERT OR REPLACE INTO holder_snapshot VALUES (?,?,?,?,?,?,?)", rows
+            "INSERT OR REPLACE INTO holder_snapshot (captured_at, brand_id, brand_name,"
+            " products_listed, details_fetched, detail_failures, crawl_error,"
+            " list_version, detail_version) VALUES (?,?,?,?,?,?,?,?,?)",
+            rows,
         )
     return len(rows)
 
@@ -130,7 +153,8 @@ def write_holder_snapshot(conn: sqlite3.Connection, rows: list[tuple]) -> int:
 def holders_at(conn: sqlite3.Connection, captured_at: str) -> list[sqlite3.Row]:
     cur = conn.execute(
         "SELECT brand_id, brand_name, products_listed, details_fetched,"
-        " detail_failures, crawl_error FROM holder_snapshot WHERE captured_at = ?",
+        " detail_failures, crawl_error, list_version, detail_version"
+        " FROM holder_snapshot WHERE captured_at = ?",
         (captured_at,),
     )
     return cur.fetchall()

@@ -55,6 +55,8 @@ def cmd_crawl(args) -> int:
                 len(r.details),
                 r.detail_failures,
                 r.error,
+                r.list_version,
+                r.detail_version,
             )
             for r in results
         ],
@@ -128,10 +130,11 @@ def cmd_score(args) -> int:
         return 1
 
     scored = []
-    for bid, bname, listed, fetched, dfails, err in holders:
+    for bid, bname, listed, fetched, dfails, err, lver, dver in holders:
         rows = rows_by_brand.get(bid, [])
         scored.append((
             listed,
+            f"{lver or '-'}/{dver or '-'}",
             score_holder(
                 bid, bname, rows,
                 product_ids_seen={r.product_id for r in rows} if rows else set(),
@@ -142,16 +145,16 @@ def cmd_score(args) -> int:
         ))
 
     # Worst first: silent holders at the top, then by conformance.
-    scored.sort(key=lambda pair: (pair[1].rate_rows > 0, pair[1].conformance,
-                                  pair[1].completeness))
+    scored.sort(key=lambda row: (row[2].rate_rows > 0, row[2].conformance,
+                                 row[2].completeness))
 
-    print(f"{'brand':30} {'prod':>5} {'rates':>6} {'compl':>7} {'conf':>6}  note")
-    for listed, score in scored:
+    print(f"{'brand':30} {'prod':>5} {'rates':>6} {'ver':>7} {'compl':>7} {'conf':>6}  note")
+    for listed, versions, score in scored:
         print(
             f"{score.brand_name[:30]:30} {listed:5d} {score.rate_rows:6d} "
-            f"{score.completeness:7.1%} {score.conformance:6.1%}  {score.note}"
+            f"{versions:>7} {score.completeness:7.1%} {score.conformance:6.1%}  {score.note}"
         )
-    scores = [score for _listed, score in scored]
+    scores = [row[2] for row in scored]
     silent = [s_ for s_ in scores if s_.rate_rows == 0]
     if silent:
         print(
