@@ -63,7 +63,7 @@ DETAIL_FAILURE_THRESHOLD = 3
 # running behind the schedule exist: Wise serves GetProducts v3.
 # https://consumerdatastandardsaustralia.github.io/standards/includes/endpoint-version-schedule/
 LIST_VERSIONS = ("5", "4", "3")
-DETAIL_VERSIONS = ("7", "6", "5")
+DETAIL_VERSIONS = ("7", "6", "5", "4")
 
 
 @dataclasses.dataclass(slots=True)

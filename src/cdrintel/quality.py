@@ -20,6 +20,14 @@ from collections import Counter
 
 from .normalise import NormalisedRate
 
+# The latest versions in the Consumer Data Standards endpoint versioning
+# schedule. A holder serving anything below these is past a retirement date
+# and is, on the plain reading of the schedule, non-conformant. This turned
+# out to be the metric that actually discriminates between holders -- see
+# the note on completeness and conformance in the README.
+CURRENT_LIST_VERSION = 5
+CURRENT_DETAIL_VERSION = 7
+
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class HolderScore:
@@ -35,6 +43,8 @@ class HolderScore:
     details_fetched: int = 0
     detail_failures: int = 0
     crawl_error: str | None = None
+    list_version: str | None = None
+    detail_version: str | None = None
 
     @property
     def completeness(self) -> float:
@@ -63,18 +73,34 @@ class HolderScore:
         return self.details_fetched / self.products
 
     @property
+    def stale_versions(self) -> list[str]:
+        """Endpoints this holder serves at a version past its retirement date."""
+        stale = []
+        if self.list_version and self.list_version.isdigit():
+            if int(self.list_version) < CURRENT_LIST_VERSION:
+                stale.append(f"list v{self.list_version}")
+        if self.detail_version and self.detail_version.isdigit():
+            if int(self.detail_version) < CURRENT_DETAIL_VERSION:
+                stale.append(f"detail v{self.detail_version}")
+        return stale
+
+    @property
     def note(self) -> str:
         """One short phrase naming this holder's worst problem, or empty."""
         if self.crawl_error:
             return "crawl failed"
-        if self.products and not self.details_fetched:
-            return "no product detail served"
-        if self.detail_failures:
-            return f"{self.detail_failures} details unreachable"
-        if self.products and not self.rate_rows:
-            return "products carry no rates"
+        if not self.products:
+            return "responds but lists no products"
+        if not self.details_fetched:
+            return "lists products, serves no detail"
         if self.rates_repaired:
             return f"{self.rates_repaired} rates published as percent"
+        if not self.rate_rows:
+            return "products carry no rates"
+        if self.stale_versions:
+            return "retired " + " and ".join(self.stale_versions)
+        if self.detail_failures:
+            return f"{self.detail_failures} details unreachable"
         return ""
 
     def as_row(self) -> dict:
@@ -93,6 +119,9 @@ class HolderScore:
             "completeness": round(self.completeness, 4),
             "conformance": round(self.conformance, 4),
             "reachability": round(self.reachability, 4),
+            "list_version": self.list_version,
+            "detail_version": self.detail_version,
+            "stale_versions": ";".join(self.stale_versions),
             "note": self.note,
         }
 
@@ -106,6 +135,8 @@ def score_holder(
     details_fetched: int = 0,
     detail_failures: int = 0,
     crawl_error: str | None = None,
+    list_version: str | None = None,
+    detail_version: str | None = None,
 ) -> HolderScore:
     """Score one holder from its normalised rate rows plus its crawl outcome.
 
@@ -134,6 +165,8 @@ def score_holder(
         details_fetched=details_fetched,
         detail_failures=detail_failures,
         crawl_error=crawl_error,
+        list_version=list_version,
+        detail_version=detail_version,
     )
 
 

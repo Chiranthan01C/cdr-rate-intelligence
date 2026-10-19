@@ -40,18 +40,25 @@ The value compounds. One snapshot is a comparison table. Twelve months of snapsh
 
 ## What the live runs found
 
-**The version ceiling was the whole story.** A first full-market crawl reported that 87 of 115 holders published no usable rates, including ANZ, Westpac, Bendigo and BOQ. That reading was wrong, and the error was mine. The [endpoint versioning schedule](https://consumerdatastandardsaustralia.github.io/standards/includes/endpoint-version-schedule/) puts Get Products at V5 and Get Product Detail at V7, with every earlier version past its retirement date as of October 2026. This crawler was offering v4 and below, so holders that retired old versions on schedule correctly answered 406 to everything on the table. The banks were compliant; the crawler was two years stale.
+A full-market crawl on 19 October 2026 reached 113 of 115 banking brands and read **24,698 rate rows from 3,861 products**.
 
-That is worth stating plainly because a rate tracker that silently mistakes its own staleness for a market-wide outage is worse than no tracker. The crawler now records which version each holder actually accepted, so the same mistake shows up as data rather than as a conclusion.
+**The version ceiling was the first story.** An earlier crawl reported that 87 of 115 holders published no usable rates, including ANZ, Westpac, Bendigo and BOQ. That reading was wrong and the error was this crawler's. The [endpoint versioning schedule](https://consumerdatastandardsaustralia.github.io/standards/includes/endpoint-version-schedule/) puts Get Products at V5 and Get Product Detail at V7, with every earlier version past retirement as of October 2026. The crawler was offering v4 and below, so compliant holders correctly answered 406 to everything on the table. Correcting the ceilings moved coverage from 28 holders to 113.
 
-**Findings that survive the correction:**
+That failure is worth stating plainly, because a rate tracker that mistakes its own staleness for a market-wide outage is worse than no tracker. `score` now refuses to stay quiet about it: if more than half of all holders return nothing, it prints a warning naming its own version ceilings as the likelier cause.
 
-| Holder | Finding |
+**The quality metrics found nothing, and that is a result.** Across 24,698 rows, completeness and conformance came back at 100% for every holder with data. Not one rate was missing a value, and not one was published as a percentage where the Standards require a decimal. The percent-repair heuristic that this project was partly built around has never fired against real data. Australian ADIs are, on this measure, uniformly conformant — so the metric does not discriminate, and saying so is more useful than quietly keeping a column of 100%s.
+
+**What does discriminate is the version each holder serves.** That signal only exists because the crawler records what it negotiated:
+
+| Finding | Holders |
 | --- | --- |
-| Traditional Credit Union | Registered as a banking data holder with no public base URI at all — nothing to crawl |
-| Wise | Still serving Get Products v3, past its May 2026 retirement date |
-| Aussie Home Loans | Registered base URI returns 404, not 406 — a dead endpoint rather than a version mismatch |
-| PayPal Australia | Three products served cleanly, one rate row between them |
+| Serving an endpoint version past its retirement date | Woolworths Team Bank (list v3), Tyro Payments (list v3, detail v5), Auswide Bank, BankVic, QBANK (v4/v6) |
+| Responds on the current version but lists no products at all | HSBC, CBA - CommBiz, Thriday |
+| Lists products but serves no detail on any version | Woolworths Team Bank (29 products) |
+| Hard endpoint failures | Aussie Home Loans (404), DDH Graham (401) |
+| Registered with no public base URI at all | Traditional Credit Union |
+
+Several of these are ADIs publishing on endpoint versions whose retirement dates have passed. That is a conformance observation drawn from measurement rather than from a vendor's blog post, and it is the kind of thing the regime's own testing does not surface.
 
 ## Design decisions worth arguing with
 
@@ -65,13 +72,14 @@ That is worth stating plainly because a rate tracker that silently mistakes its 
 
 - The percent-vs-decimal threshold is a heuristic with a magic number in it. The honest fix is per-holder convention detection — infer a holder's convention from the distribution of all its rates, then apply it consistently — rather than judging each value alone.
 - Product detail carries fees, eligibility and constraints as well as rates. Only the rates are normalised so far; fees are fetched but not yet parsed.
-- The version ceilings are hardcoded. They should be read from the versioning schedule, or at minimum fail loudly when a majority of holders reject every version offered — which is the signal that the crawler has gone stale, and which this project learned the hard way.
+- The version ceilings are still hardcoded, though `score` now warns when a majority of holders return nothing. Reading them from the published schedule would be better than warning after the fact.
+- Completeness and conformance return 100% for every holder, so they currently cost a column and tell a reader nothing. Either find a quality dimension that varies across Australian ADIs, or drop them and lead with version staleness and reachability.
 - Detail fetches ignore each product's `lastUpdated`. Skipping unchanged products and carrying their previous rows forward would cut a full crawl by most of its requests, which matters when the schedule is weekly and the target is someone else's production estate.
 - There is no backfill. The history starts the day the first snapshot runs, which is an argument for starting it today rather than when the rest is finished.
 
 ## Status
 
-43 tests, no network required. Run live against all 115 banking brands: 62 holders reachable and 1,422 products listed under the old (incorrect) version ceilings. The corrected ceilings have not yet been run at full scale, so current market coverage is unmeasured.
+49 tests, no network required. Run live against all 115 banking brands with the corrected version ceilings: 113 holders reachable, 3,861 product details, 24,698 rate rows. Only one snapshot exists so far, so `moves` has nothing to compare against until the second run.
 
 ## Data source and licence
 

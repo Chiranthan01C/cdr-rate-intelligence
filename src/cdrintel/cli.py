@@ -141,6 +141,8 @@ def cmd_score(args) -> int:
                 details_fetched=fetched,
                 detail_failures=dfails,
                 crawl_error=err,
+                list_version=lver,
+                detail_version=dver,
             ),
         ))
 
@@ -156,9 +158,29 @@ def cmd_score(args) -> int:
         )
     scores = [row[2] for row in scored]
     silent = [s_ for s_ in scores if s_.rate_rows == 0]
+    stale = [s_ for s_ in scores if s_.stale_versions]
     if silent:
         print(
             f"\n{len(silent)} of {len(scores)} holders published no usable rates.",
+            file=sys.stderr,
+        )
+    if stale:
+        print(
+            f"{len(stale)} of {len(scores)} holders serve an endpoint version"
+            " past its retirement date.",
+            file=sys.stderr,
+        )
+
+    # A crawler whose version ceilings have gone stale looks exactly like a
+    # market-wide outage. This project already made that mistake once and
+    # reported 87 of 115 holders as publishing nothing. Say so loudly rather
+    # than letting the next reader draw the same wrong conclusion.
+    if len(scores) and len(silent) / len(scores) > 0.5:
+        print(
+            "\nMore than half of all holders returned nothing. That is far more"
+            "\nlikely to mean this crawler's API version ceilings are out of date"
+            "\nthan that the market has gone dark. Check the Consumer Data Standards"
+            "\nendpoint versioning schedule before reporting any of this as a finding.",
             file=sys.stderr,
         )
     return 0

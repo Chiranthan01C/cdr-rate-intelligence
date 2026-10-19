@@ -13,12 +13,12 @@ class TestSilentHolders:
     def test_holder_with_no_rows_still_scores(self):
         """AMP Bank GO served nine products and zero readable details."""
         score = score_holder(
-            "amp", "AMP Bank GO", [], product_ids_seen=set(),
+            "amp", "AMP Bank GO", [], product_ids_seen={f"p{i}" for i in range(9)},
             details_fetched=0, detail_failures=9,
         )
         assert score.rate_rows == 0
         assert score.completeness == 0.0 and score.conformance == 0.0
-        assert score.note == "9 details unreachable"
+        assert score.note == "lists products, serves no detail"
 
     def test_products_fetched_but_carrying_no_rates_is_distinguished(self):
         """Wise served its product detail fine; the detail just has no rates."""
@@ -92,6 +92,55 @@ class TestHolderSnapshotRoundTrip:
         assert {"list_version", "detail_version"} <= columns
         kept = conn.execute("SELECT brand_name FROM holder_snapshot").fetchone()
         assert kept[0] == "Legacy Bank", "migration must not drop existing history"
+
+
+class TestStaleVersions:
+    """The version a holder serves turned out to be the metric that discriminates."""
+
+    def test_current_versions_are_not_flagged(self):
+        score = score_holder("b", "CommBank", [], details_fetched=1,
+                             list_version="5", detail_version="7")
+        assert score.stale_versions == []
+
+    def test_retired_list_version_is_named(self):
+        score = score_holder("b", "Woolworths Team Bank", [], details_fetched=1,
+                             list_version="3", detail_version="7")
+        assert score.stale_versions == ["list v3"]
+
+    def test_both_endpoints_stale_are_both_named(self):
+        score = score_holder("b", "Tyro Payments", [], details_fetched=1,
+                             list_version="3", detail_version="5")
+        assert score.stale_versions == ["list v3", "detail v5"]
+
+    def test_stale_version_reaches_the_note_when_data_is_otherwise_clean(self):
+        from cdrintel.normalise import normalise_product
+        detail = {"productId": "p", "name": "Saver",
+                  "productCategory": "TRANS_AND_SAVINGS_ACCOUNTS",
+                  "depositRates": [{"depositRateType": "VARIABLE", "rate": "0.045"}]}
+        rows = normalise_product(detail, brand_id="b", brand_name="Auswide Bank Ltd")
+        score = score_holder("b", "Auswide Bank Ltd", rows,
+                             product_ids_seen={"p"}, details_fetched=1,
+                             list_version="4", detail_version="6")
+        assert score.conformance == 1.0, "the rates themselves are fine"
+        assert score.note == "retired list v4 and detail v6"
+
+    def test_a_missing_version_is_not_guessed_at(self):
+        """A holder that never served detail has no detail version to judge."""
+        score = score_holder("b", "Thriday", [], details_fetched=0,
+                             list_version="5", detail_version=None)
+        assert score.stale_versions == []
+
+
+class TestEmptyCatalogue:
+    def test_a_holder_listing_nothing_is_distinguished_from_one_serving_no_detail(self):
+        empty = score_holder("h", "HSBC", [], product_ids_seen=set(),
+                             details_fetched=0, list_version="5")
+        assert empty.note == "responds but lists no products"
+
+        no_detail = score_holder("w", "Woolworths Team Bank", [],
+                                 product_ids_seen={"a", "b"}, details_fetched=0,
+                                 detail_failures=2, list_version="3")
+        assert no_detail.note == "lists products, serves no detail"
 
 
 class TestCircuitBreaker:
